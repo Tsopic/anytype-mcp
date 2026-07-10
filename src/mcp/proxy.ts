@@ -24,6 +24,7 @@ type NewToolDefinition = {
     description: string;
     inputSchema: IJsonSchema & { type: "object" };
     outputSchema?: IJsonSchema;
+    annotations: NonNullable<Tool["annotations"]>;
   }>;
 };
 
@@ -67,6 +68,7 @@ export class MCPProxy {
             name: truncatedToolName,
             description: method.description,
             inputSchema: method.inputSchema as Tool["inputSchema"],
+            annotations: method.annotations,
           });
         });
       });
@@ -97,14 +99,23 @@ export class MCPProxy {
         if (error instanceof HttpClientError) {
           console.error("HttpClientError encountered, returning structured error", error);
           const data = error.data?.response?.data ?? error.data ?? {};
+          const structuredData =
+            typeof data === "object" && data !== null && !Array.isArray(data)
+              ? {
+                  ...data,
+                  ...(data.status === undefined
+                    ? { status: error.status }
+                    : data.status === error.status
+                      ? {}
+                      : { http_status: error.status }),
+                }
+              : { data, status: error.status };
           return {
+            isError: true,
             content: [
               {
                 type: "text",
-                text: JSON.stringify({
-                  status: "error", // TODO: get this from http status code?
-                  ...(typeof data === "object" ? data : { data: data }),
-                }),
+                text: JSON.stringify(structuredData),
               },
             ],
           };
