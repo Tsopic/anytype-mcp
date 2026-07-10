@@ -28,11 +28,14 @@ type NewToolDefinition = {
   }>;
 };
 
+type ObjectOutputSchema = IJsonSchema & { type: "object" };
+
 export class MCPProxy {
   private server: Server;
   private httpClient: HttpClient;
   private tools: Record<string, NewToolDefinition>;
   private openApiLookup: Record<string, OpenAPIV3.OperationObject & { method: string; path: string }>;
+  private objectOutputSchemas: Record<string, ObjectOutputSchema> = {};
 
   constructor(name: string, openApiSpec: OpenAPIV3.Document) {
     this.server = new Server({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
@@ -50,6 +53,7 @@ export class MCPProxy {
     const { tools, openApiLookup } = converter.convertToMCPTools();
     this.tools = tools;
     this.openApiLookup = openApiLookup;
+    this.indexObjectOutputSchemas();
 
     this.setupHandlers();
   }
@@ -69,6 +73,9 @@ export class MCPProxy {
             description: method.description,
             inputSchema: method.inputSchema as Tool["inputSchema"],
             annotations: method.annotations,
+            ...(this.isObjectOutputSchema(method.outputSchema)
+              ? { outputSchema: method.outputSchema as Tool["outputSchema"] }
+              : {}),
           });
         });
       });
@@ -93,7 +100,15 @@ export class MCPProxy {
         const response = await this.httpClient.executeOperation(operation, params);
 
         // Convert response to MCP format
-        return { content: [this.formatResponse(response.data, response.headers, operation, params)] };
+        const result = {
+          content: [this.formatResponse(response.data, response.headers, operation, params)],
+        };
+
+        if (this.objectOutputSchemas[name] && this.isPlainJsonObject(response.data)) {
+          return { ...result, structuredContent: response.data };
+        }
+
+        return result;
       } catch (error) {
         console.error("Error in tool call", error);
         if (error instanceof HttpClientError) {
@@ -127,6 +142,30 @@ export class MCPProxy {
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
     return this.openApiLookup[operationId] ?? null;
+  }
+
+  private indexObjectOutputSchemas(): void {
+    for (const [toolName, definition] of Object.entries(this.tools)) {
+      for (const method of definition.methods) {
+        if (this.isObjectOutputSchema(method.outputSchema)) {
+          const name = this.truncateToolName(`${toolName}-${method.name}`);
+          this.objectOutputSchemas[name] = method.outputSchema;
+        }
+      }
+    }
+  }
+
+  private isObjectOutputSchema(schema: IJsonSchema | undefined): schema is ObjectOutputSchema {
+    return schema?.type === "object";
+  }
+
+  private isPlainJsonObject(data: unknown): data is Record<string, unknown> {
+    if (typeof data !== "object" || data === null || Array.isArray(data) || Buffer.isBuffer(data)) {
+      return false;
+    }
+
+    const prototype = Object.getPrototypeOf(data);
+    return prototype === Object.prototype || prototype === null;
   }
 
   private parseHeadersFromEnv(): Record<string, string> {
