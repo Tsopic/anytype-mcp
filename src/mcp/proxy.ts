@@ -3,6 +3,7 @@ import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { JSONSchema7 as IJsonSchema } from "json-schema";
 import { Headers } from "node-fetch";
+import { Buffer } from "node:buffer";
 import { OpenAPIV3 } from "openapi-types";
 import { HttpClient, HttpClientError } from "../client/http-client";
 import { OpenAPIToMCPConverter } from "../openapi/parser";
@@ -25,11 +26,14 @@ type NewToolDefinition = {
   }>;
 };
 
+type ObjectOutputSchema = IJsonSchema & { type: "object" };
+
 export class MCPProxy {
   private server: Server;
   private httpClient: HttpClient;
   private tools: Record<string, NewToolDefinition>;
   private openApiLookup: Record<string, OpenAPIV3.OperationObject & { method: string; path: string }>;
+  private objectOutputSchemas: Record<string, ObjectOutputSchema> = {};
 
   constructor(name: string, openApiSpec: OpenAPIV3.Document) {
     this.server = new Server({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
@@ -47,6 +51,7 @@ export class MCPProxy {
     const { tools, openApiLookup } = converter.convertToMCPTools();
     this.tools = tools;
     this.openApiLookup = openApiLookup;
+    this.indexObjectOutputSchemas();
 
     this.setupHandlers();
   }
@@ -65,6 +70,9 @@ export class MCPProxy {
             name: truncatedToolName,
             description: method.description,
             inputSchema: method.inputSchema as Tool["inputSchema"],
+            ...(this.isObjectOutputSchema(method.outputSchema)
+              ? { outputSchema: method.outputSchema as Tool["outputSchema"] }
+              : {}),
           });
         });
       });
@@ -89,20 +97,27 @@ export class MCPProxy {
         const response = await this.httpClient.executeOperation(operation, params);
 
         // Convert response to MCP format
-        return {
+        const result = {
           content: [
             {
-              type: "text", // currently this is the only type that seems to be used by mcp server
+              type: "text" as const,
               text: JSON.stringify(response.data), // TODO: pass through the http status code text?
             },
           ],
         };
+
+        if (this.objectOutputSchemas[name] && this.isPlainJsonObject(response.data)) {
+          return { ...result, structuredContent: response.data };
+        }
+
+        return result;
       } catch (error) {
         console.error("Error in tool call", error);
         if (error instanceof HttpClientError) {
           console.error("HttpClientError encountered, returning structured error", error);
           const data = error.data?.response?.data ?? error.data ?? {};
           return {
+            isError: true,
             content: [
               {
                 type: "text",
@@ -121,6 +136,30 @@ export class MCPProxy {
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
     return this.openApiLookup[operationId] ?? null;
+  }
+
+  private indexObjectOutputSchemas(): void {
+    for (const [toolName, definition] of Object.entries(this.tools)) {
+      for (const method of definition.methods) {
+        if (this.isObjectOutputSchema(method.outputSchema)) {
+          const name = this.truncateToolName(`${toolName}-${method.name}`);
+          this.objectOutputSchemas[name] = method.outputSchema;
+        }
+      }
+    }
+  }
+
+  private isObjectOutputSchema(schema: IJsonSchema | undefined): schema is ObjectOutputSchema {
+    return schema?.type === "object";
+  }
+
+  private isPlainJsonObject(data: unknown): data is Record<string, unknown> {
+    if (typeof data !== "object" || data === null || Array.isArray(data) || Buffer.isBuffer(data)) {
+      return false;
+    }
+
+    const prototype = Object.getPrototypeOf(data);
+    return prototype === Object.prototype || prototype === null;
   }
 
   private parseHeadersFromEnv(): Record<string, string> {
