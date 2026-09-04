@@ -131,7 +131,7 @@ describe("MCPProxy", () => {
       expect(annotations["API-deleteResource"]).toEqual(annotations["API-replaceResource"]);
     });
 
-    it("should expose only object-shaped output schemas as valid MCP tools", async () => {
+    it("should expose permissive schemas only for object-shaped outputs", async () => {
       const outputSpec = createMockOpenApiSpec({
         paths: {
           "/object": {
@@ -182,10 +182,9 @@ describe("MCPProxy", () => {
       const result = await listToolsHandler();
       const tools = Object.fromEntries(result.tools.map((tool: any) => [tool.name, tool]));
 
-      expect(tools["API-getObject"].outputSchema).toMatchObject({
+      expect(tools["API-getObject"].outputSchema).toEqual({
         type: "object",
-        required: ["message"],
-        properties: { message: { type: "string" } },
+        additionalProperties: true,
       });
       expect(tools["API-getScalar"]).not.toHaveProperty("outputSchema");
       expect(tools["API-getImage"]).not.toHaveProperty("outputSchema");
