@@ -74,7 +74,13 @@ export class MCPProxy {
             inputSchema: method.inputSchema as Tool["inputSchema"],
             annotations: method.annotations,
             ...(this.isObjectOutputSchema(method.outputSchema)
-              ? { outputSchema: method.outputSchema as Tool["outputSchema"] }
+              ? {
+                  // Anytype can return null for fields that its OpenAPI document
+                  // currently describes as object-only. Keep structured results
+                  // enabled without making strict MCP clients reject valid API
+                  // responses against an over-constrained generated schema.
+                  outputSchema: { type: "object", additionalProperties: true } as Tool["outputSchema"],
+                }
               : {}),
           });
         });
